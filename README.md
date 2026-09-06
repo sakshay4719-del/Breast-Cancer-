@@ -17,13 +17,13 @@ just open the link in any mobile browser.
 
 ### 1. Create a GitHub repo and push this folder
 
+This folder is already a git repo with an initial commit made. You just need to
+create the remote repo on GitHub and push to it.
+
 1. Go to https://github.com/new, create a repo (e.g. `breast-ultrasound-ml-webapp`).
    Public is fine and free; keep it Private only if you're on a paid Streamlit Cloud plan.
 2. In this folder, run:
    ```
-   git init
-   git add .
-   git commit -m "Initial commit"
    git branch -M main
    git remote add origin https://github.com/<your-username>/<repo-name>.git
    git push -u origin main
