@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 
+import numpy as np
 import pennylane as qml
 import streamlit as st
 import torch
@@ -70,6 +71,52 @@ def prepare_image(image):
     return pipeline(image.convert("RGB")).unsqueeze(0)
 
 
+RECOMMENDATIONS = {
+    "malignant": ("Suspicious", "Further clinical evaluation recommended."),
+    "benign": ("Not suspicious", "Low suspicion; routine follow-up recommended."),
+    "normal": ("Not suspicious", "No abnormality detected; continue routine screening."),
+}
+
+
+def compute_gradcam(model, image_tensor, target_class):
+    activations = {}
+    gradients = {}
+    target_layer = model.layer4[-1]
+
+    def forward_hook(module, inputs, output):
+        activations["value"] = output
+
+    def backward_hook(module, grad_input, grad_output):
+        gradients["value"] = grad_output[0]
+
+    handle_f = target_layer.register_forward_hook(forward_hook)
+    handle_b = target_layer.register_full_backward_hook(backward_hook)
+    try:
+        model.zero_grad(set_to_none=True)
+        output = model(image_tensor)
+        output[0, target_class].backward()
+    finally:
+        handle_f.remove()
+        handle_b.remove()
+
+    weights = gradients["value"][0].mean(dim=(1, 2))
+    cam = torch.relu((weights[:, None, None] * activations["value"][0]).sum(dim=0))
+    cam = cam / (cam.max() + 1e-8)
+    return cam.detach().numpy()
+
+
+def overlay_important_region(image, cam):
+    cam_resized = np.array(
+        Image.fromarray(np.uint8(cam * 255)).resize(image.size, resample=Image.BILINEAR)
+    ) / 255.0
+    base = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+    red_layer = np.zeros_like(base)
+    red_layer[..., 0] = 1.0
+    alpha = (cam_resized ** 1.5)[..., None] * 0.6
+    blended = base * (1 - alpha) + red_layer * alpha
+    return Image.fromarray(np.uint8(np.clip(blended, 0, 1) * 255))
+
+
 st.set_page_config(page_title="Breast Ultrasound ML", page_icon="ML", layout="centered")
 st.title("Breast Ultrasound ML Project")
 st.caption("Classical and hybrid quantum image classification")
@@ -89,6 +136,18 @@ if uploaded_file is not None:
         classical_logits = model(image_tensor)
         probabilities = torch.softmax(classical_logits[0], dim=0)
     top_index = int(probabilities.argmax())
+    top_class = classes[top_index].lower()
+    label, recommendation = RECOMMENDATIONS.get(top_class, ("Unknown", "Manual review recommended."))
+
+    st.subheader("Prediction Summary")
+    st.write(f"**Prediction:** {label}")
+    st.write(f"**Confidence:** {probabilities[top_index].item():.0%}")
+    st.write(f"**Model recommendation:** {recommendation}")
+
+    cam = compute_gradcam(model, image_tensor, top_index)
+    highlighted_image = overlay_important_region(image, cam)
+    st.image(highlighted_image, caption="Important image region: highlighted", use_container_width=True)
+
     st.subheader(f"Classical result: {classes[top_index].title()}")
     st.write(f"Classical probability: {probabilities[top_index].item():.1%}")
     st.bar_chart({name.title(): float(probability) for name, probability in zip(classes, probabilities)})
